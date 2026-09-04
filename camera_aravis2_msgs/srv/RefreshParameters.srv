@@ -1,0 +1,12 @@
+# Service definition to re-read every dynamic parameter's feature from the camera and update
+# the node's parameters to match, without writing anything back. Needed after a command
+# feature (e.g. 'FocusAuto') changes camera state that the node otherwise only knows from
+# what it last wrote.
+
+---
+
+# flag indicating if every feature could be read
+bool is_successful
+
+# names of the parameters whose value changed
+string[] changed

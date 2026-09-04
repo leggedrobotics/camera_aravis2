@@ -29,6 +29,8 @@
 #include "camera_aravis2/camera_driver.h"
 
 // ROS
+#include <optional>
+#include <cmath>
 #include <rcl_interfaces/msg/floating_point_range.hpp>
 #include <rcl_interfaces/msg/integer_range.hpp>
 #include <rclcpp/time.hpp>
@@ -49,6 +51,8 @@ CameraDriver::CameraDriver(const std::string& name, const rclcpp::NodeOptions& o
   is_spawning_(false),
   p_white_balance_srv_(nullptr),
   p_execute_command_srv_(nullptr),
+  p_refresh_parameters_srv_(nullptr),
+  is_refreshing_parameters_(false),
   p_parameter_callback_handle_(nullptr),
   is_diagnostics_published_(false),
   p_diagnostic_pub_(nullptr),
@@ -1094,6 +1098,13 @@ bool CameraDriver::initializeServices()
         "~/execute_command",
         std::bind(&CameraDriver::onExecuteCommandTriggered, this,
                   std::placeholders::_1, std::placeholders::_2));
+
+    //--- initialize service to re-read the dynamic parameters from the camera
+    p_refresh_parameters_srv_ =
+      this->create_service<camera_aravis2_msgs::srv::RefreshParameters>(
+        "~/refresh_parameters",
+        std::bind(&CameraDriver::onRefreshParametersTriggered, this,
+                  std::placeholders::_1, std::placeholders::_2));
     return true;
 }
 
@@ -1369,6 +1380,11 @@ rcl_interfaces::msg::SetParametersResult CameraDriver::handleDynamicParameterCha
         else if (std::find(dynamic_parameters_names_.begin(), dynamic_parameters_names_.end(),
                            param_name) != dynamic_parameters_names_.end())
         {
+            //--- a value just read from the camera by onRefreshParametersTriggered() is
+            //--- accepted as is; writing it back would be a no-op at best
+            if (is_refreshing_parameters_)
+                continue;
+
             switch (param.get_type())
             {
             case rclcpp::PARAMETER_STRING:
@@ -2238,6 +2254,88 @@ void CameraDriver::onExecuteCommandTriggered(
     }
     res->is_successful = true;
     RCLCPP_INFO(logger_, "Executed command '%s'.", req->feature_name.c_str());
+}
+
+//==================================================================================================
+void CameraDriver::onRefreshParametersTriggered(
+  const std::shared_ptr<camera_aravis2_msgs::srv::RefreshParameters::Request> req,
+  std::shared_ptr<camera_aravis2_msgs::srv::RefreshParameters::Response> res)
+{
+    RCL_UNUSED(req);
+    res->is_successful = false;
+    //--- check for correct state of node
+    if (!p_device_ || !this->is_initialized_)
+        return;
+
+    bool all_read = true;
+    for (const std::string& name : dynamic_parameters_names_)
+    {
+        const rclcpp::Parameter current = get_parameter(name);
+        std::optional<rclcpp::Parameter> fresh;
+        switch (current.get_type())
+        {
+        case rclcpp::PARAMETER_STRING: {
+            std::string value;
+            if (!getFeatureValue<std::string>(name, value))
+                all_read = false;
+            else if (value != current.as_string())
+                fresh = rclcpp::Parameter(name, value);
+            break;
+        }
+        case rclcpp::PARAMETER_BOOL: {
+            bool value = false;
+            if (!getFeatureValue<bool>(name, value))
+                all_read = false;
+            else if (value != current.as_bool())
+                fresh = rclcpp::Parameter(name, value);
+            break;
+        }
+        case rclcpp::PARAMETER_INTEGER: {
+            int value = 0;
+            if (!getFeatureValue<int>(name, value))
+                all_read = false;
+            else if (static_cast<int64_t>(value) != current.as_int())
+                fresh = rclcpp::Parameter(name, value);
+            break;
+        }
+        case rclcpp::PARAMETER_DOUBLE: {
+            float value = 0.f;
+            if (!getFeatureValue<float>(name, value))
+            {
+                all_read = false;
+                break;
+            }
+            //--- same 3 decimals the parameter was declared with
+            const double rounded = std::round(static_cast<double>(value) * 1000.0) / 1000.0;
+            if (std::fabs(rounded - current.as_double()) > 1e-9)
+                fresh = rclcpp::Parameter(name, rounded);
+            break;
+        }
+        default:
+            break;
+        }
+
+        if (!fresh)
+            continue;
+
+        //--- set_parameter() runs handleDynamicParameterChange() synchronously; the flag keeps it
+        //--- from writing the value straight back to the camera
+        is_refreshing_parameters_ = true;
+        try
+        {
+            set_parameter(*fresh);
+            res->changed.push_back(name);
+        }
+        catch (const std::exception& e)
+        {
+            RCLCPP_WARN(logger_, "Refreshing parameter '%s' from the camera failed: %s",
+                        name.c_str(), e.what());
+            all_read = false;
+        }
+        is_refreshing_parameters_ = false;
+    }
+
+    res->is_successful = all_read;
 }
 
 //==================================================================================================

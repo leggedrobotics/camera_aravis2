@@ -375,6 +375,9 @@ ros2 service call /camera_driver_gv/execute_command camera_aravis2_msgs/srv/Exec
 ```
 The response reports whether the command was available and executed successfully.
 
+A command may change camera state that the node only knows from what it last wrote (```FocusAuto``` moves the lens, so the ```Focus``` parameter goes stale).
+The ```refresh_parameters``` service re-reads every dynamic parameter's feature from the camera, updates the node's parameters to match without writing anything back, and returns the names of the parameters that changed.
+
 ### How to dynamically change camera parameters
 
 Camera_aravis allows to customize the camera parameters that are to be made dynamically changeable, for example, by utilizing ```rqt_reconfigure```.

@@ -61,6 +61,7 @@ extern "C"
 #include <camera_aravis2_msgs/msg/camera_diagnostics.hpp>
 #include <camera_aravis2_msgs/srv/calculate_white_balance.hpp>
 #include <camera_aravis2_msgs/srv/execute_command.hpp>
+#include <camera_aravis2_msgs/srv/refresh_parameters.hpp>
 
 namespace camera_aravis2
 {
@@ -528,6 +529,16 @@ class CameraDriver : public CameraAravisNodeBase
       const std::shared_ptr<camera_aravis2_msgs::srv::ExecuteCommand::Request> req,
       std::shared_ptr<camera_aravis2_msgs::srv::ExecuteCommand::Response> res) const;
 
+    /**
+     * @brief Service callback method to re-read the dynamic parameters from the camera.
+     *
+     * @param[in] req Service request (empty)
+     * @param[out] res Service response listing the parameters that changed
+     */
+    void onRefreshParametersTriggered(
+      const std::shared_ptr<camera_aravis2_msgs::srv::RefreshParameters::Request> req,
+      std::shared_ptr<camera_aravis2_msgs::srv::RefreshParameters::Response> res);
+
     //--- FUNCTION DECLARATION ---//
 
   protected:
@@ -564,6 +575,14 @@ class CameraDriver : public CameraAravisNodeBase
     /// Service to execute a GenICam command feature
     rclcpp::Service<camera_aravis2_msgs::srv::ExecuteCommand>::SharedPtr
       p_execute_command_srv_;
+
+    /// Service to re-read the dynamic parameters from the camera
+    rclcpp::Service<camera_aravis2_msgs::srv::RefreshParameters>::SharedPtr
+      p_refresh_parameters_srv_;
+
+    /// True while onRefreshParametersTriggered() sets parameters from values just read
+    /// from the camera, so handleDynamicParameterChange() does not write them back.
+    bool is_refreshing_parameters_;
 
     /// Callback handle to adjust parameters
     OnSetParametersCallbackHandle::SharedPtr p_parameter_callback_handle_;
