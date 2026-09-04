@@ -1,0 +1,14 @@
+# Service definition to execute a GenICam command feature on demand (e.g. 'FocusAuto',
+# 'TriggerSoftware'). Command features have no value to set, so they cannot be driven
+# through the dynamic parameters.
+
+# name of the GenICam command feature
+string feature_name
+
+---
+
+# flag indicating if successful
+bool is_successful
+
+# reason when not successful
+string message

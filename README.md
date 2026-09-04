@@ -367,6 +367,14 @@ To trigger an automatic white balance computation and a subsequent setting of ``
 Calling this service will trigger a one shot computation of the white balance parameters and return the newly computed balance ratios.
 This can be called no matter which mode has been set previously.
 
+### How to execute a GenICam command feature
+GenICam ```Command``` features (e.g. ```FocusAuto``` on cameras with a motorized lens, or ```TriggerSoftware```) have no value and therefore cannot be driven through the dynamic parameters.
+For these, camera_aravis2 provides a service called ```execute_command``` which takes the feature name and executes it once:
+```
+ros2 service call /camera_driver_gv/execute_command camera_aravis2_msgs/srv/ExecuteCommand "{feature_name: FocusAuto}"
+```
+The response reports whether the command was available and executed successfully.
+
 ### How to dynamically change camera parameters
 
 Camera_aravis allows to customize the camera parameters that are to be made dynamically changeable, for example, by utilizing ```rqt_reconfigure```.

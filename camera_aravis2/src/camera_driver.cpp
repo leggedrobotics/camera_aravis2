@@ -48,6 +48,7 @@ CameraDriver::CameraDriver(const std::string& name, const rclcpp::NodeOptions& o
   CameraAravisNodeBase(name, options),
   is_spawning_(false),
   p_white_balance_srv_(nullptr),
+  p_execute_command_srv_(nullptr),
   p_parameter_callback_handle_(nullptr),
   is_diagnostics_published_(false),
   p_diagnostic_pub_(nullptr),
@@ -1085,6 +1086,13 @@ bool CameraDriver::initializeServices()
       this->create_service<camera_aravis2_msgs::srv::CalculateWhiteBalance>(
         "~/calculate_white_balance_once",
         std::bind(&CameraDriver::onCalculateWhiteBalanceOnceTriggered, this,
+                  std::placeholders::_1, std::placeholders::_2));
+
+    //--- initialize service to execute GenICam command features
+    p_execute_command_srv_ =
+      this->create_service<camera_aravis2_msgs::srv::ExecuteCommand>(
+        "~/execute_command",
+        std::bind(&CameraDriver::onExecuteCommandTriggered, this,
                   std::placeholders::_1, std::placeholders::_2));
     return true;
 }
@@ -2201,6 +2209,35 @@ void CameraDriver::onCalculateWhiteBalanceOnceTriggered(
                               "'Once' failed!");
         return;
     }
+}
+
+//==================================================================================================
+void CameraDriver::onExecuteCommandTriggered(
+  const std::shared_ptr<camera_aravis2_msgs::srv::ExecuteCommand::Request> req,
+  std::shared_ptr<camera_aravis2_msgs::srv::ExecuteCommand::Response> res) const
+{
+    //--- set return values to default
+    res->is_successful = false;
+    //--- check for correct state of node
+    if (!p_device_ || !this->is_initialized_)
+    {
+        res->message = "Camera is not initialized.";
+        return;
+    }
+    if (req->feature_name.empty())
+    {
+        res->message = "No feature name given.";
+        return;
+    }
+    //--- execute; executeCommand() already checks availability and logs the aravis error
+    if (!executeCommand(req->feature_name))
+    {
+        res->message = "Command '" + req->feature_name + "' is not available or failed.";
+        RCLCPP_ERROR(logger_, "%s", res->message.c_str());
+        return;
+    }
+    res->is_successful = true;
+    RCLCPP_INFO(logger_, "Executed command '%s'.", req->feature_name.c_str());
 }
 
 //==================================================================================================

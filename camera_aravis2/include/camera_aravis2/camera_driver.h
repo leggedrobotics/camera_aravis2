@@ -60,6 +60,7 @@ extern "C"
 #include "camera_aravis2/image_buffer_pool.h"
 #include <camera_aravis2_msgs/msg/camera_diagnostics.hpp>
 #include <camera_aravis2_msgs/srv/calculate_white_balance.hpp>
+#include <camera_aravis2_msgs/srv/execute_command.hpp>
 
 namespace camera_aravis2
 {
@@ -517,6 +518,16 @@ class CameraDriver : public CameraAravisNodeBase
       const std::shared_ptr<camera_aravis2_msgs::srv::CalculateWhiteBalance::Request> req,
       std::shared_ptr<camera_aravis2_msgs::srv::CalculateWhiteBalance::Response> res) const;
 
+    /**
+     * @brief Service callback method to execute a GenICam command feature.
+     *
+     * @param[in] req Service request holding the feature name
+     * @param[out] res Service response
+     */
+    void onExecuteCommandTriggered(
+      const std::shared_ptr<camera_aravis2_msgs::srv::ExecuteCommand::Request> req,
+      std::shared_ptr<camera_aravis2_msgs::srv::ExecuteCommand::Response> res) const;
+
     //--- FUNCTION DECLARATION ---//
 
   protected:
@@ -549,6 +560,10 @@ class CameraDriver : public CameraAravisNodeBase
     /// Service to calculate white balance
     rclcpp::Service<camera_aravis2_msgs::srv::CalculateWhiteBalance>::SharedPtr
       p_white_balance_srv_;
+
+    /// Service to execute a GenICam command feature
+    rclcpp::Service<camera_aravis2_msgs::srv::ExecuteCommand>::SharedPtr
+      p_execute_command_srv_;
 
     /// Callback handle to adjust parameters
     OnSetParametersCallbackHandle::SharedPtr p_parameter_callback_handle_;
