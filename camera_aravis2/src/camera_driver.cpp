@@ -55,6 +55,7 @@ CameraDriver::CameraDriver(const std::string& name, const rclcpp::NodeOptions& o
   p_refresh_parameters_srv_(nullptr),
   is_refreshing_parameters_(false),
   p_read_back_timer_(nullptr),
+  read_back_moved_(false),
   read_back_stable_(0),
   p_parameter_callback_handle_(nullptr),
   is_diagnostics_published_(false),
@@ -2267,7 +2268,9 @@ void CameraDriver::onExecuteCommandTriggered(
                   it->second) == dynamic_parameters_names_.end())
         return;
     read_back_param_   = it->second;
+    read_back_initial_ = get_parameter(read_back_param_).value_to_string();
     read_back_last_.clear();
+    read_back_moved_   = false;
     read_back_stable_  = 0;
     read_back_start_   = std::chrono::steady_clock::now();
     p_read_back_timer_ = this->create_wall_timer(std::chrono::milliseconds(500),
@@ -2279,6 +2282,9 @@ void CameraDriver::onReadBackTimer()
 {
     constexpr int kStableReads = 3;
     constexpr auto kTimeout    = std::chrono::seconds(10);
+    //--- the command returns before anything moves: an unchanged value only counts as settled
+    //--- once it has had this long to start
+    constexpr auto kStartGrace = std::chrono::seconds(3);
 
     bool changed = false;
     if (refreshDynamicParameter(read_back_param_, changed))
@@ -2286,7 +2292,10 @@ void CameraDriver::onReadBackTimer()
         const std::string value = get_parameter(read_back_param_).value_to_string();
         read_back_stable_       = (value == read_back_last_) ? read_back_stable_ + 1 : 1;
         read_back_last_         = value;
-        if (read_back_stable_ >= kStableReads)
+        read_back_moved_        = read_back_moved_ || value != read_back_initial_;
+        const bool may_settle   = read_back_moved_ ||
+                                std::chrono::steady_clock::now() - read_back_start_ >= kStartGrace;
+        if (read_back_stable_ >= kStableReads && may_settle)
         {
             RCLCPP_INFO(logger_, "'%s' settled at %s.", read_back_param_.c_str(), value.c_str());
             p_read_back_timer_->cancel();
@@ -2385,8 +2394,17 @@ bool CameraDriver::refreshDynamicParameter(const std::string& name, bool& change
     bool ok                   = true;
     try
     {
-        set_parameter(*fresh);
-        changed = true;
+        const auto result = set_parameter(*fresh);
+        if (result.successful)
+        {
+            changed = true;
+        }
+        else
+        {
+            RCLCPP_WARN(logger_, "Refreshing parameter '%s' from the camera was rejected: %s",
+                        name.c_str(), result.reason.c_str());
+            ok = false;
+        }
     }
     catch (const std::exception& e)
     {

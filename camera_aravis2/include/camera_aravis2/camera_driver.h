@@ -603,7 +603,9 @@ class CameraDriver : public CameraAravisNodeBase
     /// Re-reads the parameter a command changes inside the camera until it settles.
     rclcpp::TimerBase::SharedPtr p_read_back_timer_;
     std::string read_back_param_;
+    std::string read_back_initial_;
     std::string read_back_last_;
+    bool read_back_moved_;
     int read_back_stable_;
     std::chrono::steady_clock::time_point read_back_start_;
 
