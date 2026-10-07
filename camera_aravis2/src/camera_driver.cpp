@@ -31,6 +31,7 @@
 // ROS
 #include <optional>
 #include <cmath>
+#include <map>
 #include <rcl_interfaces/msg/floating_point_range.hpp>
 #include <rcl_interfaces/msg/integer_range.hpp>
 #include <rclcpp/time.hpp>
@@ -53,6 +54,8 @@ CameraDriver::CameraDriver(const std::string& name, const rclcpp::NodeOptions& o
   p_execute_command_srv_(nullptr),
   p_refresh_parameters_srv_(nullptr),
   is_refreshing_parameters_(false),
+  p_read_back_timer_(nullptr),
+  read_back_stable_(0),
   p_parameter_callback_handle_(nullptr),
   is_diagnostics_published_(false),
   p_diagnostic_pub_(nullptr),
@@ -2230,7 +2233,7 @@ void CameraDriver::onCalculateWhiteBalanceOnceTriggered(
 //==================================================================================================
 void CameraDriver::onExecuteCommandTriggered(
   const std::shared_ptr<camera_aravis2_msgs::srv::ExecuteCommand::Request> req,
-  std::shared_ptr<camera_aravis2_msgs::srv::ExecuteCommand::Response> res) const
+  std::shared_ptr<camera_aravis2_msgs::srv::ExecuteCommand::Response> res)
 {
     //--- set return values to default
     res->is_successful = false;
@@ -2254,6 +2257,53 @@ void CameraDriver::onExecuteCommandTriggered(
     }
     res->is_successful = true;
     RCLCPP_INFO(logger_, "Executed command '%s'.", req->feature_name.c_str());
+
+    //--- commands that move something inside the camera: the command returns before the
+    //--- feature has changed, so read it back until it holds still
+    static const std::map<std::string, std::string> kReadBack = {{"FocusAuto", "Focus"}};
+    const auto it = kReadBack.find(req->feature_name);
+    if (it == kReadBack.end() ||
+        std::find(dynamic_parameters_names_.begin(), dynamic_parameters_names_.end(),
+                  it->second) == dynamic_parameters_names_.end())
+        return;
+    read_back_param_   = it->second;
+    read_back_last_.clear();
+    read_back_stable_  = 0;
+    read_back_start_   = std::chrono::steady_clock::now();
+    p_read_back_timer_ = this->create_wall_timer(std::chrono::milliseconds(500),
+                                                 std::bind(&CameraDriver::onReadBackTimer, this));
+}
+
+//==================================================================================================
+void CameraDriver::onReadBackTimer()
+{
+    constexpr int kStableReads = 3;
+    constexpr auto kTimeout    = std::chrono::seconds(10);
+
+    bool changed = false;
+    if (refreshDynamicParameter(read_back_param_, changed))
+    {
+        const std::string value = get_parameter(read_back_param_).value_to_string();
+        read_back_stable_       = (value == read_back_last_) ? read_back_stable_ + 1 : 1;
+        read_back_last_         = value;
+        if (read_back_stable_ >= kStableReads)
+        {
+            RCLCPP_INFO(logger_, "'%s' settled at %s.", read_back_param_.c_str(), value.c_str());
+            p_read_back_timer_->cancel();
+            return;
+        }
+    }
+    else
+    {
+        read_back_stable_ = 0;
+    }
+
+    if (std::chrono::steady_clock::now() - read_back_start_ > kTimeout)
+    {
+        RCLCPP_WARN(logger_, "'%s' still changing %llds after the command; stopped reading it back.",
+                    read_back_param_.c_str(), static_cast<long long>(kTimeout.count()));
+        p_read_back_timer_->cancel();
+    }
 }
 
 //==================================================================================================
@@ -2270,72 +2320,82 @@ void CameraDriver::onRefreshParametersTriggered(
     bool all_read = true;
     for (const std::string& name : dynamic_parameters_names_)
     {
-        const rclcpp::Parameter current = get_parameter(name);
-        std::optional<rclcpp::Parameter> fresh;
-        switch (current.get_type())
-        {
-        case rclcpp::PARAMETER_STRING: {
-            std::string value;
-            if (!getFeatureValue<std::string>(name, value))
-                all_read = false;
-            else if (value != current.as_string())
-                fresh = rclcpp::Parameter(name, value);
-            break;
-        }
-        case rclcpp::PARAMETER_BOOL: {
-            bool value = false;
-            if (!getFeatureValue<bool>(name, value))
-                all_read = false;
-            else if (value != current.as_bool())
-                fresh = rclcpp::Parameter(name, value);
-            break;
-        }
-        case rclcpp::PARAMETER_INTEGER: {
-            int value = 0;
-            if (!getFeatureValue<int>(name, value))
-                all_read = false;
-            else if (static_cast<int64_t>(value) != current.as_int())
-                fresh = rclcpp::Parameter(name, value);
-            break;
-        }
-        case rclcpp::PARAMETER_DOUBLE: {
-            float value = 0.f;
-            if (!getFeatureValue<float>(name, value))
-            {
-                all_read = false;
-                break;
-            }
-            //--- same 3 decimals the parameter was declared with
-            const double rounded = std::round(static_cast<double>(value) * 1000.0) / 1000.0;
-            if (std::fabs(rounded - current.as_double()) > 1e-9)
-                fresh = rclcpp::Parameter(name, rounded);
-            break;
-        }
-        default:
-            break;
-        }
-
-        if (!fresh)
-            continue;
-
-        //--- set_parameter() runs handleDynamicParameterChange() synchronously; the flag keeps it
-        //--- from writing the value straight back to the camera
-        is_refreshing_parameters_ = true;
-        try
-        {
-            set_parameter(*fresh);
-            res->changed.push_back(name);
-        }
-        catch (const std::exception& e)
-        {
-            RCLCPP_WARN(logger_, "Refreshing parameter '%s' from the camera failed: %s",
-                        name.c_str(), e.what());
+        bool changed = false;
+        if (!refreshDynamicParameter(name, changed))
             all_read = false;
-        }
-        is_refreshing_parameters_ = false;
+        else if (changed)
+            res->changed.push_back(name);
     }
 
     res->is_successful = all_read;
+}
+
+//==================================================================================================
+bool CameraDriver::refreshDynamicParameter(const std::string& name, bool& changed)
+{
+    changed = false;
+    const rclcpp::Parameter current = get_parameter(name);
+    std::optional<rclcpp::Parameter> fresh;
+    switch (current.get_type())
+    {
+    case rclcpp::PARAMETER_STRING: {
+        std::string value;
+        if (!getFeatureValue<std::string>(name, value))
+            return false;
+        if (value != current.as_string())
+            fresh = rclcpp::Parameter(name, value);
+        break;
+    }
+    case rclcpp::PARAMETER_BOOL: {
+        bool value = false;
+        if (!getFeatureValue<bool>(name, value))
+            return false;
+        if (value != current.as_bool())
+            fresh = rclcpp::Parameter(name, value);
+        break;
+    }
+    case rclcpp::PARAMETER_INTEGER: {
+        int value = 0;
+        if (!getFeatureValue<int>(name, value))
+            return false;
+        if (static_cast<int64_t>(value) != current.as_int())
+            fresh = rclcpp::Parameter(name, value);
+        break;
+    }
+    case rclcpp::PARAMETER_DOUBLE: {
+        float value = 0.f;
+        if (!getFeatureValue<float>(name, value))
+            return false;
+        //--- same 3 decimals the parameter was declared with
+        const double rounded = std::round(static_cast<double>(value) * 1000.0) / 1000.0;
+        if (std::fabs(rounded - current.as_double()) > 1e-9)
+            fresh = rclcpp::Parameter(name, rounded);
+        break;
+    }
+    default:
+        break;
+    }
+
+    if (!fresh)
+        return true;
+
+    //--- set_parameter() runs handleDynamicParameterChange() synchronously; the flag keeps it
+    //--- from writing the value straight back to the camera
+    is_refreshing_parameters_ = true;
+    bool ok                   = true;
+    try
+    {
+        set_parameter(*fresh);
+        changed = true;
+    }
+    catch (const std::exception& e)
+    {
+        RCLCPP_WARN(logger_, "Refreshing parameter '%s' from the camera failed: %s",
+                    name.c_str(), e.what());
+        ok = false;
+    }
+    is_refreshing_parameters_ = false;
+    return ok;
 }
 
 //==================================================================================================

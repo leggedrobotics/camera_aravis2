@@ -33,6 +33,7 @@
 #include <yaml-cpp/yaml.h>
 
 // Std
+#include <chrono>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -527,7 +528,7 @@ class CameraDriver : public CameraAravisNodeBase
      */
     void onExecuteCommandTriggered(
       const std::shared_ptr<camera_aravis2_msgs::srv::ExecuteCommand::Request> req,
-      std::shared_ptr<camera_aravis2_msgs::srv::ExecuteCommand::Response> res) const;
+      std::shared_ptr<camera_aravis2_msgs::srv::ExecuteCommand::Response> res);
 
     /**
      * @brief Service callback method to re-read the dynamic parameters from the camera.
@@ -538,6 +539,21 @@ class CameraDriver : public CameraAravisNodeBase
     void onRefreshParametersTriggered(
       const std::shared_ptr<camera_aravis2_msgs::srv::RefreshParameters::Request> req,
       std::shared_ptr<camera_aravis2_msgs::srv::RefreshParameters::Response> res);
+
+    /**
+     * @brief Re-read one dynamic parameter from the camera and set it if it changed.
+     *
+     * @param[in] name Dynamic parameter name
+     * @param[out] changed True if the node's value was updated
+     * @return False if the feature could not be read or set
+     */
+    bool refreshDynamicParameter(const std::string& name, bool& changed);
+
+    /**
+     * @brief Timer callback that re-reads the parameter a command moves (e.g. Focus after
+     * FocusAuto) until it holds still, so the node's value follows the camera.
+     */
+    void onReadBackTimer();
 
     //--- FUNCTION DECLARATION ---//
 
@@ -583,6 +599,13 @@ class CameraDriver : public CameraAravisNodeBase
     /// True while onRefreshParametersTriggered() sets parameters from values just read
     /// from the camera, so handleDynamicParameterChange() does not write them back.
     bool is_refreshing_parameters_;
+
+    /// Re-reads the parameter a command changes inside the camera until it settles.
+    rclcpp::TimerBase::SharedPtr p_read_back_timer_;
+    std::string read_back_param_;
+    std::string read_back_last_;
+    int read_back_stable_;
+    std::chrono::steady_clock::time_point read_back_start_;
 
     /// Callback handle to adjust parameters
     OnSetParametersCallbackHandle::SharedPtr p_parameter_callback_handle_;
