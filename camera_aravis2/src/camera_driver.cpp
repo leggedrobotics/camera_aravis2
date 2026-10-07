@@ -57,6 +57,7 @@ CameraDriver::CameraDriver(const std::string& name, const rclcpp::NodeOptions& o
   p_read_back_timer_(nullptr),
   read_back_moved_(false),
   read_back_reads_(0),
+  read_back_last_ok_(false),
   read_back_stable_(0),
   p_parameter_callback_handle_(nullptr),
   is_diagnostics_published_(false),
@@ -2262,9 +2263,10 @@ void CameraDriver::onExecuteCommandTriggered(
     if (read_back)
     {
         //--- the camera's value, not the node's: it may have changed since the node last read it
+        //--- if it can't be read, there is no baseline: only the start grace can settle it
         bool changed = false;
-        refreshDynamicParameter(it->second, changed);
-        initial = get_parameter(it->second).value_to_string();
+        if (refreshDynamicParameter(it->second, changed))
+            initial = get_parameter(it->second).value_to_string();
     }
 
     //--- execute; executeCommand() already checks availability and logs the aravis error
@@ -2284,6 +2286,7 @@ void CameraDriver::onExecuteCommandTriggered(
     read_back_last_.clear();
     read_back_moved_   = false;
     read_back_reads_   = 0;
+    read_back_last_ok_ = false;
     read_back_stable_  = 0;
     read_back_start_   = std::chrono::steady_clock::now();
     p_read_back_timer_ = this->create_wall_timer(std::chrono::milliseconds(500),
@@ -2300,13 +2303,15 @@ void CameraDriver::onReadBackTimer()
     constexpr auto kStartGrace = std::chrono::seconds(3);
 
     bool changed = false;
-    if (refreshDynamicParameter(read_back_param_, changed))
+    read_back_last_ok_ = refreshDynamicParameter(read_back_param_, changed);
+    if (read_back_last_ok_)
     {
         const std::string value = get_parameter(read_back_param_).value_to_string();
         ++read_back_reads_;
         read_back_stable_       = (value == read_back_last_) ? read_back_stable_ + 1 : 1;
         read_back_last_         = value;
-        read_back_moved_        = read_back_moved_ || value != read_back_initial_;
+        read_back_moved_        = read_back_moved_ ||
+                           (!read_back_initial_.empty() && value != read_back_initial_);
         const bool may_settle   = read_back_moved_ ||
                                 std::chrono::steady_clock::now() - read_back_start_ >= kStartGrace;
         if (read_back_stable_ >= kStableReads && may_settle)
@@ -2323,7 +2328,7 @@ void CameraDriver::onReadBackTimer()
 
     if (std::chrono::steady_clock::now() - read_back_start_ > kTimeout)
     {
-        if (read_back_reads_ == 0)
+        if (read_back_reads_ == 0 || !read_back_last_ok_)
             RCLCPP_WARN(logger_, "Could not read '%s' back from the camera within %llds.",
                         read_back_param_.c_str(), static_cast<long long>(kTimeout.count()));
         else
