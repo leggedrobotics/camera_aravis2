@@ -56,6 +56,7 @@ CameraDriver::CameraDriver(const std::string& name, const rclcpp::NodeOptions& o
   is_refreshing_parameters_(false),
   p_read_back_timer_(nullptr),
   read_back_moved_(false),
+  read_back_reads_(0),
   read_back_stable_(0),
   p_parameter_callback_handle_(nullptr),
   is_diagnostics_published_(false),
@@ -2249,6 +2250,23 @@ void CameraDriver::onExecuteCommandTriggered(
         res->message = "No feature name given.";
         return;
     }
+    //--- commands that move something inside the camera: the command returns before the
+    //--- feature has changed, so read it back until it holds still
+    static const std::map<std::string, std::string> kReadBack = {{"FocusAuto", "Focus"}};
+    const auto it         = kReadBack.find(req->feature_name);
+    const bool read_back  = it != kReadBack.end() &&
+                           std::find(dynamic_parameters_names_.begin(),
+                                     dynamic_parameters_names_.end(),
+                                     it->second) != dynamic_parameters_names_.end();
+    std::string initial;
+    if (read_back)
+    {
+        //--- the camera's value, not the node's: it may have changed since the node last read it
+        bool changed = false;
+        refreshDynamicParameter(it->second, changed);
+        initial = get_parameter(it->second).value_to_string();
+    }
+
     //--- execute; executeCommand() already checks availability and logs the aravis error
     if (!executeCommand(req->feature_name))
     {
@@ -2259,18 +2277,13 @@ void CameraDriver::onExecuteCommandTriggered(
     res->is_successful = true;
     RCLCPP_INFO(logger_, "Executed command '%s'.", req->feature_name.c_str());
 
-    //--- commands that move something inside the camera: the command returns before the
-    //--- feature has changed, so read it back until it holds still
-    static const std::map<std::string, std::string> kReadBack = {{"FocusAuto", "Focus"}};
-    const auto it = kReadBack.find(req->feature_name);
-    if (it == kReadBack.end() ||
-        std::find(dynamic_parameters_names_.begin(), dynamic_parameters_names_.end(),
-                  it->second) == dynamic_parameters_names_.end())
+    if (!read_back)
         return;
     read_back_param_   = it->second;
-    read_back_initial_ = get_parameter(read_back_param_).value_to_string();
+    read_back_initial_ = initial;
     read_back_last_.clear();
     read_back_moved_   = false;
+    read_back_reads_   = 0;
     read_back_stable_  = 0;
     read_back_start_   = std::chrono::steady_clock::now();
     p_read_back_timer_ = this->create_wall_timer(std::chrono::milliseconds(500),
@@ -2290,6 +2303,7 @@ void CameraDriver::onReadBackTimer()
     if (refreshDynamicParameter(read_back_param_, changed))
     {
         const std::string value = get_parameter(read_back_param_).value_to_string();
+        ++read_back_reads_;
         read_back_stable_       = (value == read_back_last_) ? read_back_stable_ + 1 : 1;
         read_back_last_         = value;
         read_back_moved_        = read_back_moved_ || value != read_back_initial_;
@@ -2309,8 +2323,12 @@ void CameraDriver::onReadBackTimer()
 
     if (std::chrono::steady_clock::now() - read_back_start_ > kTimeout)
     {
-        RCLCPP_WARN(logger_, "'%s' still changing %llds after the command; stopped reading it back.",
-                    read_back_param_.c_str(), static_cast<long long>(kTimeout.count()));
+        if (read_back_reads_ == 0)
+            RCLCPP_WARN(logger_, "Could not read '%s' back from the camera within %llds.",
+                        read_back_param_.c_str(), static_cast<long long>(kTimeout.count()));
+        else
+            RCLCPP_WARN(logger_, "'%s' still changing %llds after the command; stopped reading it back.",
+                        read_back_param_.c_str(), static_cast<long long>(kTimeout.count()));
         p_read_back_timer_->cancel();
     }
 }

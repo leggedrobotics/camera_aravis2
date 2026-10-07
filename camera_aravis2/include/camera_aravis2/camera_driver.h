@@ -606,6 +606,7 @@ class CameraDriver : public CameraAravisNodeBase
     std::string read_back_initial_;
     std::string read_back_last_;
     bool read_back_moved_;
+    int read_back_reads_;
     int read_back_stable_;
     std::chrono::steady_clock::time_point read_back_start_;
 
