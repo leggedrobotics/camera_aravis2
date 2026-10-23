@@ -1118,46 +1118,49 @@ bool CameraDriver::initializeServices()
 //==================================================================================================
 void CameraDriver::handleMessageSubscriptionChange(rclcpp::MatchedInfo& iEventInfo)
 {
-    GuardedGError err;
+    std::lock_guard<std::mutex> lock(acquisition_mutex_);
 
-    //--- evaluate whether to start or stop acquisition only if device is available and if the
-    //--- node is initialized.
-    if (p_device_ && this->is_initialized_)
+    //--- before the node is initialized, the end of spawnCameraStreams() takes the count
+    if (!p_device_ || !this->is_initialized_)
     {
-        //--- if the new subscriber count of the matched event is greater than 0 and if there were
-        //--- no subscriber so far, start acquisition
-        if (iEventInfo.current_count > 0 && current_num_subscribers_ == 0)
-        {
-            RCLCPP_INFO(logger_, "|-> Acquisition start.");
-
-            arv_device_execute_command(p_device_, "AcquisitionStart", err.ref());
-            CHECK_GERROR_MSG(err, logger_, "In executing 'AcquisitionStart'.");
-        }
-        //--- if the new subscriber count of the matched event is equal to 0 and if there were
-        //--- subscribers until now, stop acquisition
-        else if (iEventInfo.current_count == 0 && current_num_subscribers_ > 0)
-        {
-            RCLCPP_INFO(logger_, "->| Acquisition stop.");
-
-            arv_device_execute_command(p_device_, "AcquisitionStop", err.ref());
-            CHECK_GERROR_MSG(err, logger_, "In executing 'AcquisitionStop'.");
-        }
-    }
-    else
-    {
-        RCLCPP_WARN(logger_, "Subscription change detected but no action taken. "
-                             "Reason: p_device_ is NULL or node is not initialized.");
+        RCLCPP_INFO(logger_, "Subscription change before initialization is done; "
+                             "acted on once it is.");
         return;
     }
 
-    //--- get the maximum number of subscribers over all streams and assign to the member variable
-    current_num_subscribers_ = 0;
+    updateAcquisition(iEventInfo.current_count);
+}
+
+//==================================================================================================
+void CameraDriver::updateAcquisition(const int iEventCount)
+{
+    GuardedGError err;
+
+    //--- the maximum number of subscribers over all streams, and the matched event's own count
+    int num_subscribers = std::max(iEventCount, 0);
     for (uint i = 0; i < streams_.size(); ++i)
     {
-        current_num_subscribers_ =
+        num_subscribers =
           std::max(static_cast<int>(streams_[i].camera_pub.getNumSubscribers()),
-                   current_num_subscribers_);
+                   num_subscribers);
     }
+
+    if (num_subscribers > 0 && current_num_subscribers_ == 0)
+    {
+        RCLCPP_INFO(logger_, "|-> Acquisition start.");
+
+        arv_device_execute_command(p_device_, "AcquisitionStart", err.ref());
+        CHECK_GERROR_MSG(err, logger_, "In executing 'AcquisitionStart'.");
+    }
+    else if (num_subscribers == 0 && current_num_subscribers_ > 0)
+    {
+        RCLCPP_INFO(logger_, "->| Acquisition stop.");
+
+        arv_device_execute_command(p_device_, "AcquisitionStop", err.ref());
+        CHECK_GERROR_MSG(err, logger_, "In executing 'AcquisitionStop'.");
+    }
+
+    current_num_subscribers_ = num_subscribers;
 }
 #endif
 
@@ -1766,21 +1769,20 @@ void CameraDriver::spawnCameraStreams()
     RCLCPP_INFO(logger_, "  Num. Streams:  (%i / %i)",
                 num_opened_streams, static_cast<int>(streams_.size()));
 
-#ifndef WITH_MATCHED_EVENTS
+    std::lock_guard<std::mutex> lock(acquisition_mutex_);
+
+#ifdef WITH_MATCHED_EVENTS
+    //--- Subscriptions matched while spawning were not acted on: start acquisition for them now.
+    updateAcquisition(0);
+#else
     //--- If matched events are not available, the number of subscribers are not dynamically
-    //--- changed. Thus, set number of subscribers to 1 in order for the acquisition to be started
-    //--- below.
+    //--- changed. Thus, start acquisition right away.
     current_num_subscribers_ = 1;
+    RCLCPP_INFO(logger_, "|-> Acquisition start at initialization.");
+
+    arv_device_execute_command(p_device_, "AcquisitionStart", err.ref());
+    CHECK_GERROR_MSG(err, logger_, "In executing 'AcquisitionStart'.");
 #endif
-
-    //--- When there are already subscribers to the image topic, start acquisition.
-    if (current_num_subscribers_ > 0)
-    {
-        RCLCPP_INFO(logger_, "|-> Acquisition start at initialization.");
-
-        arv_device_execute_command(p_device_, "AcquisitionStart", err.ref());
-        CHECK_GERROR_MSG(err, logger_, "In executing 'AcquisitionStart'.");
-    }
 
     this->is_initialized_ = true;
 }

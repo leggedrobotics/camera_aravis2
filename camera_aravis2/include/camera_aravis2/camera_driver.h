@@ -35,6 +35,7 @@
 // Std
 #include <chrono>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -408,6 +409,12 @@ class CameraDriver : public CameraAravisNodeBase
      * @param[in] iEventInfo Info on matched event.
      */
     void handleMessageSubscriptionChange(rclcpp::MatchedInfo& iEventInfo);
+
+    /**
+     * @brief Start or stop acquisition from the current number of subscribers, the matched
+     * event's own count included. Called with acquisition_mutex_ held.
+     */
+    void updateAcquisition(const int iEventCount);
 #endif
 
     /**
@@ -628,6 +635,10 @@ class CameraDriver : public CameraAravisNodeBase
 
     /// Number of subscribers currently connected to the message topic.
     int current_num_subscribers_;
+
+    /// Guards current_num_subscribers_ and is_initialized_ between the matched events and the
+    /// end of initialization, which run on different threads.
+    std::mutex acquisition_mutex_;
 
     /// YAML node holding diagnostic features
     YAML::Node diagnostic_features_;
